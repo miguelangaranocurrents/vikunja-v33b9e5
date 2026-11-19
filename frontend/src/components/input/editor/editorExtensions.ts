@@ -3,7 +3,7 @@ import {nextTick, toValue, type MaybeRefOrGetter, type Ref} from 'vue'
 import StarterKit from '@tiptap/starter-kit'
 import {createNodeFromContent, Extension, mergeAttributes, type Editor, type Extensions} from '@tiptap/core'
 import {Plugin, PluginKey} from '@tiptap/pm/state'
-import {Fragment} from '@tiptap/pm/model'
+import {Fragment, type Node} from '@tiptap/pm/model'
 import {marked} from 'marked'
 
 import Link from '@tiptap/extension-link'
@@ -223,6 +223,102 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 		},
 	})
 
+	function serializeClipboardFragment(fragment: Fragment): string {
+		const parts: string[] = []
+		fragment.forEach(child => {
+			parts.push(serializeClipboardNode(child))
+		})
+		return parts.join('\n')
+	}
+
+	function serializeClipboardListItem(item: Node, markerWidth: number): string {
+		const padding = ' '.repeat(markerWidth)
+		const parts: string[] = []
+		let first = true
+		item.forEach(child => {
+			const text = serializeClipboardNode(child)
+			parts.push(
+				first
+					? text
+					: text.split('\n').map(line => line === '' ? line : padding + line).join('\n'),
+			)
+			first = false
+		})
+		return parts.join('\n')
+	}
+
+	function serializeClipboardNode(node: Node): string {
+		if (node.isText) {
+			return node.text ?? ''
+		}
+
+		if (node.isInline) {
+			if (node.type.name === 'hardBreak') {
+				return '\n'
+			}
+			let text = ''
+			node.forEach(child => {
+				text += serializeClipboardNode(child)
+			})
+			return text
+		}
+
+		const {name} = node.type
+
+		if (name === 'codeBlock') {
+			return node.textContent
+		}
+
+		if (name === 'blockquote') {
+			return serializeClipboardFragment(node.content)
+				.split('\n')
+				.map(line => `> ${line}`)
+				.join('\n')
+		}
+
+		if (name === 'bulletList' || name === 'orderedList' || name === 'taskList') {
+			const lines: string[] = []
+			let index = typeof node.attrs.start === 'number' ? node.attrs.start : 1
+			node.forEach(item => {
+				let marker: string
+				if (name === 'orderedList') {
+					marker = `${index}. `
+					index++
+				} else if (name === 'taskList') {
+					marker = item.attrs.checked ? '- [x] ' : '- [ ] '
+				} else {
+					marker = '- '
+				}
+				lines.push(marker + serializeClipboardListItem(item, marker.length))
+			})
+			return lines.join('\n')
+		}
+
+		if (node.inlineContent) {
+			let text = ''
+			node.forEach(child => {
+				text += serializeClipboardNode(child)
+			})
+			return text
+		}
+
+		return serializeClipboardFragment(node.content)
+	}
+
+	const ClipboardSerializer = Extension.create({
+		name: 'clipboardSerializer',
+		addProseMirrorPlugins() {
+			return [
+				new Plugin({
+					key: new PluginKey('clipboardSerializer'),
+					props: {
+						clipboardTextSerializer: slice => serializeClipboardFragment(slice.content),
+					},
+				}),
+			]
+		},
+	})
+
 	const PasteHandler = Extension.create({
 		name: 'pasteHandler',
 
@@ -404,6 +500,7 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 
 		EmojiExtension,
 
+		ClipboardSerializer,
 		PasteHandler,
 	]
 }
